@@ -1,115 +1,167 @@
 // SPDX-License-Identifier: MIT
+// Jimmy Acosta
+
 pragma solidity ^0.8.0;
 
-contract Subasta {
-    address public propietario;
-    address public mejorOferente;
-    uint256 public mejorOferta;
-    uint256 public tiempoFinal;
-    uint256 public comisionTotal;
+contract Auction {
+    address public owner;
+    address public highestBidder;
+    uint256 public highestBid;
+    uint256 public auctionEndTime;
+    uint256 public totalCommission;
 
-    struct Oferta {
-        uint256 monto;
-        bool retirado;
+    struct Bid {
+        uint256 amount;
+        bool withdrawn;
     }
 
-    mapping(address => Oferta[]) public ofertas;
+    mapping(address => Bid[]) public bids;
+    address[] public bidders;
 
-    event NuevaOferta(address indexed oferente, uint256 monto);
-    event SubastaFinalizada(address ganador, uint256 montoGanador);
+    event NewBid(address indexed bidder, uint256 amount);
+    event AuctionEnded(address winner, uint256 amount);
 
-    modifier soloDuranteSubasta() {
-        require(block.timestamp < tiempoFinal, "La subasta ha finalizado.");
+    modifier onlyDuringAuction() {
+        require(block.timestamp < auctionEndTime, "Auction ended");
         _;
     }
 
-    modifier soloGanador() {
-        require(msg.sender == mejorOferente, "No sos el ganador.");
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner");
         _;
     }
 
-    constructor(uint256 _duracionSegundos) {
-        propietario = msg.sender;
-        tiempoFinal = block.timestamp + _duracionSegundos;
+    constructor(uint256 durationInSeconds) {
+        owner = msg.sender;
+        auctionEndTime = block.timestamp + durationInSeconds;
     }
 
-    function ofertar() external payable soloDuranteSubasta {
-        require(msg.value > 0, "La oferta debe ser mayor a 0.");
+    /// @notice Place a bid. It must be at least 5% higher than the current highest bid.
+    function placeBid() external payable onlyDuringAuction {
+        require(msg.value > 0, "Bid must be greater than 0");
 
-        uint256 totalOferta = obtenerTotalOfertado(msg.sender) + msg.value;
-
-        // Verifica que la nueva oferta sea al menos un 5% mayor a la mejor actual
+        uint256 totalBid = getTotalBid(msg.sender) + msg.value;
         require(
-            mejorOferente == address(0) || totalOferta >= mejorOferta + (mejorOferta * 5) / 100,
-            "La oferta debe ser al menos un 5% mayor que la mejor oferta."
+            highestBidder == address(0) || totalBid >= highestBid + (highestBid * 5) / 100,
+            "Bid must be at least 5% higher than the current highest"
         );
 
-        // Extiende el tiempo de la subasta si la oferta se realiza en los ultimos 10 minutos
-        if (tiempoFinal - block.timestamp <= 10 minutes) {
-            tiempoFinal += 10 minutes;
+        if (auctionEndTime - block.timestamp <= 10 minutes) {
+            auctionEndTime += 10 minutes;
         }
 
-        ofertas[msg.sender].push(Oferta(msg.value, false));
+        if (bids[msg.sender].length == 0) {
+            bidders.push(msg.sender); // Track unique bidders
+        }
 
-        mejorOferente = msg.sender;
-        mejorOferta = totalOferta;
+        bids[msg.sender].push(Bid(msg.value, false));
+        highestBidder = msg.sender;
+        highestBid = totalBid;
 
-        emit NuevaOferta(msg.sender, totalOferta);
+        emit NewBid(msg.sender, totalBid);
     }
 
-    function obtenerGanador() external view returns (address, uint256) {
-        require(block.timestamp >= tiempoFinal, "La subasta sigue activa.");
-        return (mejorOferente, mejorOferta);
+    /// @notice Returns the winner of the auction and the amount.
+    function getWinner() external view returns (address, uint256) {
+        require(block.timestamp >= auctionEndTime, "Auction still active");
+        return (highestBidder, highestBid);
     }
 
-    function obtenerOfertas(address _oferente) external view returns (Oferta[] memory) {
-        return ofertas[_oferente];
+    /// @notice Returns all the bids made by a specific bidder.
+    function getBids(address bidder) external view returns (Bid[] memory) {
+        return bids[bidder];
     }
 
-    function retirarExcedente() external {
-        uint256 excedente = 0;
-        uint256 sumaOfertas = 0;
+    /// @notice Allows losing bidders to withdraw all their funds.
+    function refundLosingBidders() external onlyOwner {
+        require(block.timestamp >= auctionEndTime, "Auction still active");
 
-        for (uint i = 0; i < ofertas[msg.sender].length; i++) {
-            if (!ofertas[msg.sender][i].retirado) {
-                sumaOfertas += ofertas[msg.sender][i].monto;
+        for (uint i = 0; i < bidders.length; i++) {
+            address bidder = bidders[i];
+
+            if (bidder == highestBidder) {
+                continue;
+            }
+
+            uint256 refundAmount = 0;
+            uint256 len = bids[bidder].length;
+
+            for (uint j = 0; j < len; j++) {
+                if (!bids[bidder][j].withdrawn) {
+                    refundAmount += bids[bidder][j].amount;
+                    bids[bidder][j].withdrawn = true;
+                }
+            }
+
+            if (refundAmount > 0) {
+                uint256 fee = (refundAmount * 2) / 100;
+                totalCommission += fee;
+                payable(bidder).transfer(refundAmount - fee);
+            }
+        }
+    }
+
+    /// @notice Allows the winner to withdraw any surplus funds beyond the winning bid.
+    function withdrawSurplus() external {
+        uint256 surplus = 0;
+        uint256 total = 0;
+        uint256 len = bids[msg.sender].length;
+
+        for (uint i = 0; i < len; i++) {
+            if (!bids[msg.sender][i].withdrawn) {
+                total += bids[msg.sender][i].amount;
             }
         }
 
-        if (msg.sender == mejorOferente) {
-            require(sumaOfertas > mejorOferta, "No hay excedente para retirar.");
-            excedente = sumaOfertas - mejorOferta;
+        if (msg.sender == highestBidder) {
+            require(total > highestBid, "No surplus to withdraw");
+            surplus = total - highestBid;
         } else {
-            excedente = sumaOfertas;
+            surplus = total;
         }
 
-        require(excedente > 0, "No hay nada para retirar.");
+        require(surplus > 0, "Nothing to withdraw");
 
-        for (uint i = 0; i < ofertas[msg.sender].length; i++) {
-            ofertas[msg.sender][i].retirado = true;
+        for (uint i = 0; i < len; i++) {
+            bids[msg.sender][i].withdrawn = true;
         }
 
-        uint256 comision = (excedente * 2) / 100;
-        comisionTotal += comision;
+        uint256 fee = (surplus * 2) / 100;
+        totalCommission += fee;
 
-        payable(msg.sender).transfer(excedente - comision);
+        payable(msg.sender).transfer(surplus - fee);
     }
 
-    function finalizarSubasta() external {
-        require(block.timestamp >= tiempoFinal, "La subasta aun no ha finalizado.");
-        require(msg.sender == propietario, "Solo el propietario puede finalizar la subasta.");
+    /// @notice Finalizes the auction, marking the winner's bids as withdrawn.
+    function finalizeAuction() external onlyOwner {
+        require(block.timestamp >= auctionEndTime, "Auction still active");
 
-        for (uint i = 0; i < ofertas[mejorOferente].length; i++) {
-            ofertas[mejorOferente][i].retirado = true;
+        uint256 len = bids[highestBidder].length;
+        for (uint i = 0; i < len; i++) {
+            bids[highestBidder][i].withdrawn = true;
         }
 
-        emit SubastaFinalizada(mejorOferente, mejorOferta);
+        emit AuctionEnded(highestBidder, highestBid);
     }
 
-    function obtenerTotalOfertado(address _oferente) internal view returns (uint256 total) {
-        for (uint i = 0; i < ofertas[_oferente].length; i++) {
-            if (!ofertas[_oferente][i].retirado) {
-                total += ofertas[_oferente][i].monto;
+    /// @notice Emergency withdrawal for the owner after the auction ends.
+    function emergencyWithdraw() external onlyOwner {
+        require(block.timestamp >= auctionEndTime, "Auction still active");
+
+        uint256 contractBalance = address(this).balance;
+        require(contractBalance > 0, "Nothing to withdraw");
+
+        payable(owner).transfer(contractBalance);
+    }
+
+    /// @notice Returns the total amount a bidder has bid so far.
+    /// @param bidder The address of the bidder.
+    /// @return total The total bid amount.
+    function getTotalBid(address bidder) internal view returns (uint256 total) {
+        uint256 len = bids[bidder].length;
+        for (uint i = 0; i < len; i++) {
+            if (!bids[bidder][i].withdrawn) {
+                total += bids[bidder][i].amount;
             }
         }
     }

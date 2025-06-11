@@ -1,107 +1,160 @@
-Trabajo Final - Módulo 2: Contrato Inteligente de Subasta
+🧾 Auction Smart Contract
 
-Este proyecto implementa un contrato inteligente de una subasta desarrollado en Solidity, cumpliendo con todos los requisitos del módulo.
-Estructura del Contrato
+This Solidity smart contract implements a decentralized auction system where users can place incremental bids. The contract enforces auction rules such as bid increments, deadline extensions, secure refunds, and commission handling, making it suitable for trustless auctions on Ethereum.
+📌 Features
 
-El contrato se llama Subasta y permite gestionar una subasta pública con múltiples participantes.
-Variables Principales
+    Place bids with a minimum 5% increase over the highest.
 
-    propietario: Dirección del usuario que despliega el contrato. Solo él puede finalizar la subasta.
+    Extend auction time by 10 minutes if a bid is placed near the end.
 
-    duracion: Duración de la subasta en segundos.
+    Track all bids per user.
 
-    inicio: Fecha y hora en la que comienza la subasta (timestamp del bloque).
+    Allow users to withdraw excess or non-winning bids.
 
-    mejorOferta: Monto actual de la mejor oferta.
+    Admin (owner) can finalize the auction.
 
-    mejorOferente: Dirección del usuario que hizo la mejor oferta.
+    Emergency fund recovery by the owner.
 
-    finalizada: Booleano que indica si la subasta ya fue finalizada.
+    Secure commission deduction (2%) on withdrawals.
 
-    ofertas: Un mapping que asocia cada dirección con un array de valores ofertados.
+🧱 State Variables
+Variable	Type	Description
+owner	address	Address of the contract deployer (auction creator).
+highestBidder	address	Current highest bidder.
+highestBid	uint256	Current highest total bid amount.
+auctionEndTime	uint256	Timestamp when the auction ends.
+totalCommission	uint256	Accumulated commissions from all withdrawals (2% per withdrawal).
+bids	mapping	Mapping from address to an array of Bid structs for tracking offers.
+📦 Structs
+Bid
 
-    saldoPendiente: Un mapping que permite gestionar los excesos de depósitos, útiles para reembolso parcial durante la subasta.
+struct Bid {
+    uint256 amount;
+    bool withdrawn;
+}
 
-Constructor
+Field	Type	Description
+amount	uint256	Amount of Ether offered in the bid.
+withdrawn	bool	Whether the bid was already claimed.
+⚙️ Functions
+🏗️ constructor(uint256 _durationSeconds)
 
-constructor(uint256 _duracionSegundos)
+Initializes the auction with a set duration.
 
-Este constructor se ejecuta al momento de desplegar el contrato y define la duración de la subasta. También registra al propietario (quien despliega el contrato) y el tiempo de inicio usando block.timestamp.
-Modificadores
+    Parameters:
 
-    soloDuranteSubasta: Restringe el uso de funciones a cuando la subasta esté activa. Verifica que el tiempo actual esté dentro del periodo permitido y que la subasta no haya finalizado.
+        _durationSeconds (uint256): Duration of the auction in seconds.
 
-    soloPropietario: Restringe ciertas funciones solo al propietario del contrato.
+    Access: Public.
 
-Función ofertar()
+🟢 placeBid() external payable
 
-function ofertar() public payable soloDuranteSubasta
+Places a new bid. Requires a msg.value greater than zero, and the total bid must exceed the current highest bid by at least 5%. If the bid occurs in the last 10 minutes of the auction, the auction end time is extended by 10 more minutes.
 
-Permite a cualquier usuario enviar una oferta. La función verifica que el monto enviado sea al menos un 5% mayor que la oferta actual más alta. Si se realiza una oferta dentro de los últimos 10 minutos de la subasta, el tiempo se extiende 10 minutos adicionales para permitir competencia justa.
+    Parameters: None (uses msg.value).
 
-Además, esta función:
+    Modifiers: onlyWhileAuctionActive.
 
-    Guarda el exceso respecto a la oferta anterior para permitir un reembolso parcial.
+    Events: Emits NewBid(address bidder, uint256 amount).
 
-    Actualiza al mejor oferente.
+🟢 getWinner() external view returns (address, uint256)
 
-    Emite un evento NuevaOferta.
+Returns the winner's address and the winning bid amount.
 
-Función retirarExceso()
+    Returns:
 
-function retirarExceso() public
+        address: The highest bidder.
 
-Permite a los usuarios retirar el exceso de fondos depositados que no forman parte de su última oferta válida. Esta lógica es parte de la funcionalidad avanzada y previene el bloqueo innecesario de fondos.
-Función obtenerGanador()
+        uint256: The amount of the highest bid.
 
-function obtenerGanador() public view returns (address, uint256)
+    Conditions: Callable only after the auction has ended.
 
-Devuelve la dirección del mejor oferente y el monto que ofertó. No modifica el estado del contrato y es de solo lectura.
-Función obtenerOfertas(address _oferente)
+🟢 getBids(address _bidder) external view returns (Bid[] memory)
 
-function obtenerOfertas(address _oferente) public view returns (uint256[] memory)
+Returns all bids placed by a specific address.
 
-Permite consultar todas las ofertas que una dirección determinada realizó durante la subasta.
-Función finalizarSubasta()
+    Parameters:
 
-function finalizarSubasta() public soloPropietario
+        _bidder (address): Address of the bidder to query.
 
-Finaliza la subasta. Esta función puede ser llamada únicamente por el propietario del contrato. Realiza lo siguiente:
+    Returns:
 
-    Marca la subasta como finalizada.
+        Bid[] memory: Array of bid records for that address.
 
-    Devuelve los depósitos a todos los participantes que no ganaron, reteniendo una comisión del 2% sobre cada uno.
+🟢 withdrawExcess() external
 
-    No devuelve el monto ofertado por el ganador, ya que se considera la compra.
+Allows bidders to withdraw their non-winning bids, or excess amount if they are the winner (anything over the final winning bid). Applies a 2% commission to the withdrawal. Marks all withdrawn bids as true.
 
-    Emite el evento SubastaFinalizada.
+    Conditions:
 
-Eventos
+        Only callable if there are unclaimed bids.
 
-    NuevaOferta(address oferente, uint256 monto): Se emite cada vez que se realiza una nueva oferta válida.
+        If the sender is the winner, only the excess can be withdrawn.
 
-    SubastaFinalizada(address ganador, uint256 monto): Se emite cuando el propietario finaliza la subasta.
+    Events: Transfers Ether to the caller.
 
-Comisiones y Reembolsos
+🛑 finalizeAuction() external
 
-    El contrato retiene un 2% de comisión de las ofertas de los no ganadores al finalizar la subasta.
+Marks the auction as finalized. Only the contract owner can call this after the auction ends. It locks the winner's bids to prevent withdrawal.
 
-    Durante la subasta, los usuarios pueden retirar el exceso de sus ofertas anteriores (esto es parte de la funcionalidad avanzada).
+    Conditions:
 
-Seguridad y Buenas Prácticas
+        Auction must be ended.
 
-    Validación estricta de los estados y condiciones con require.
+        Caller must be owner.
 
-    Accesos restringidos con modificadores.
+    Events: Emits AuctionEnded(address winner, uint256 amount).
 
-    Lógica para evitar condiciones de carrera y problemas de seguridad como el reingreso (no se hacen llamadas externas sin actualizar el estado antes).
+🛠️ emergencyWithdraw() external
 
-    Uso de mapping para manejar depósitos de forma segura y trazable.
+Allows the contract owner to withdraw all contract funds in case of an emergency.
 
-Consideraciones Finales
+    Conditions: Caller must be the owner.
 
-    El contrato está diseñado para cumplir todos los requisitos del módulo: constructor, funciones para ofertar, mostrar ganador, mostrar historial de ofertas, devolver depósitos, manejar depósitos, emitir eventos y permitir reembolso parcial.
+🔒 getTotalBid(address _bidder) internal view returns (uint256)
 
-    Se utilizaron modificadores para mantener la lógica ordenada y legible.
+Calculates the total unwithdrawn amount bid by a specific address.
 
-    Toda la lógica de validación y reembolso fue cuidadosamente diseñada para evitar errores de seguridad y permitir el uso seguro por parte de múltiples usuarios.
+    Parameters:
+
+        _bidder (address): Address whose total bid to calculate.
+
+    Returns:
+
+        uint256: Total active bid amount (excluding withdrawn bids).
+
+    Access: Internal.
+
+📢 Events
+Event	Parameters	Description
+NewBid	address bidder, uint256 amount	Emitted when a new bid is placed.
+AuctionEnded	address winner, uint256 highestBid	Emitted when the auction ends.
+✅ Best Practices Applied
+
+    ✅ Short error messages to reduce gas costs.
+
+    ✅ require checks at the top of functions.
+
+    ✅ For-loop optimizations: no internal array length recalculations.
+
+    ✅ Dirty variables declared outside loops.
+
+    ✅ Read state once, write once.
+
+    ✅ Emergency fund recovery function.
+
+    ✅ Full English documentation.
+
+🧪 Example Workflow
+
+    Owner deploys the contract with a 1-day auction duration.
+
+    Users place bids via placeBid(), with each new bid being 5% higher than the previous one.
+
+    If the auction is nearing its end, the timer extends by 10 minutes.
+
+    Once the auction ends, the owner finalizes it using finalizeAuction().
+
+    Non-winners or the winning bidder (for excess) call withdrawExcess().
+
+    The owner can recover leftover funds with emergencyWithdraw().
